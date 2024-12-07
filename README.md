@@ -15,7 +15,7 @@ The features in this code include:
 - JWKS server functionality
 
 To run this project:
-- You will need Python 3.x, flask, pyjwt, requests, cryptography, unittest, coverage and SQLite
+- You will need to install Python 3.x, flask, pyjwt, requests, cryptography, unittest, coverage and SQLite
 - Clone the repository
 - Set up a virtual environment
 - Install all dependencies (flask, pyjwt, requests and cryptography
