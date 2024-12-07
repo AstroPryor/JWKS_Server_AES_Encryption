@@ -1,0 +1,2 @@
+# JWKS_Server_AES_Encryption
+This is the third part in the JWKS project series in my Foundations of Cybersecurity class. The requirements for this project were to include AES encryption for securing private keys stored in the database. The AES encryption will ensure that the private keys are protected while they are being stored and are only accessible to the server when decrypted securely. I used the cryptography library from Python to read the encryption key from an environment variable. 
