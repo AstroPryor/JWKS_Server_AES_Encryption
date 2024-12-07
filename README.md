@@ -1,6 +1,8 @@
 # JWKS_Server_AES_Encryption
 This is the third part of the JWKS project series in my Foundations of Cybersecurity class. The requirements for this project were to include AES encryption for securing private keys stored in the database. The AES encryption will ensure that the private keys are protected while being stored and are only accessible to the server when decrypted securely. I used the Python cryptography library to read the encryption key from an environment variable. 
+
 The original version can be found at this link: https://github.com/AstroPryor/JWKS_SERVER
+
 The second part of this project can be found here: https://github.com/AstroPryor/JWKS-Server-SQL
 
 To run this project, you will need to have Python 3, flask, pyjwt, request, and cryptography installed along with unittest and coverage, and SQLite. From there, you have to copy the repository and create and activate a virtual machine. I used venv for this project. The server will still run on port 8080 and you can still interact with the server using curl. 
