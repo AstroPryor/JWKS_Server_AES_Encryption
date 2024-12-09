@@ -1,170 +1,129 @@
 import os
-import sqlite3
-from flask import Flask, jsonify, request
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.backends import default_backend
-from datetime import datetime, timedelta
-import jwt
 import uuid
-from werkzeug.security import generate_password_hash, check_password_hash
+import sqlite3
+from flask import Flask, request, jsonify
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from hashlib import sha256
+from datetime import datetime, timedelta
+from functools import wraps
+from threading import Lock
+from time import time
 
 app = Flask(__name__)
-DATABASE = 'aes_private_keys.db'
-SECRET_KEY = os.environ.get('NOT_MY_KEY').encode()
+db_file = 'app.db'
+conn = sqlite3.connect(db_file, check_same_thread=False)
+cur = conn.cursor()
+lock = Lock()
 
-def get_db_connection():
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    return conn
+SECRET_KEY = os.environ.get('NOT_MY_KEY', 'default_secret_key').encode()
 
-def create_tables():
-    conn = get_db_connection()
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS keys (
-            kid INTEGER PRIMARY KEY AUTOINCREMENT,
-            key BLOB NOT NULL,
-            exp INTEGER NOT NULL
-        )
-    ''')
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL,
-            email TEXT UNIQUE,
-            date_registered TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_login TIMESTAMP
-        )
-    ''')
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS auth_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            request_ip TEXT NOT NULL,
-            request_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            user_id INTEGER,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
 
-def encrypt_key(key):
-    salt = os.urandom(16)
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=100000,
-        backend=default_backend()
-    )
-    encryption_key = kdf.derive(SECRET_KEY)
-    cipher = Cipher(algorithms.AES(encryption_key), modes.GCM(salt), backend=default_backend())
+cur.execute("""
+CREATE TABLE IF NOT EXISTS private_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL
+)
+""")
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    email TEXT UNIQUE,
+    date_registered TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_login TIMESTAMP
+)
+""")
+cur.execute("""
+CREATE TABLE IF NOT EXISTS auth_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_ip TEXT NOT NULL,
+    request_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    user_id INTEGER,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+)
+""")
+conn.commit()
+
+def encrypt_data(data):
+    iv = os.urandom(16)
+    cipher = Cipher(algorithms.AES(SECRET_KEY), modes.CFB(iv), backend=default_backend())
     encryptor = cipher.encryptor()
-    encrypted_key = encryptor.update(key) + encryptor.finalize()
-    return salt + cipher.mode.tag + encrypted_key
+    return (iv + encryptor.update(data.encode()) + encryptor.finalize()).hex()
 
-def decrypt_key(encrypted_key):
-    salt = encrypted_key[:16]
-    tag = encrypted_key[16:32]
-    encrypted_data = encrypted_key[32:]
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=100000,
-        backend=default_backend()
-    )
-    encryption_key = kdf.derive(SECRET_KEY)
-    cipher = Cipher(algorithms.AES(encryption_key), modes.GCM(salt, tag), backend=default_backend())
+def decrypt_data(data):
+    raw_data = bytes.fromhex(data)
+    iv, encrypted = raw_data[:16], raw_data[16:]
+    cipher = Cipher(algorithms.AES(SECRET_KEY), modes.CFB(iv), backend=default_backend())
     decryptor = cipher.decryptor()
-    return decryptor.update(encrypted_data) + decryptor.finalize()
+    return decryptor.update(encrypted) + decryptor.finalize()
 
-def generate_and_store_key(expiry_duration):
-    private_key = rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=2048,
-        backend=default_backend()
-    )
-    private_key_pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.TraditionalOpenSSL,
-        encryption_algorithm=serialization.NoEncryption()
-    )
-    encrypted_key = encrypt_key(private_key_pem)
-    expiry_time = int((datetime.utcnow() + expiry_duration).timestamp())
-    conn = get_db_connection()
-    conn.execute('INSERT INTO keys (key, exp) VALUES (?, ?)', (encrypted_key, expiry_time))
-    conn.commit()
-    conn.close()
+def rate_limited(func):
+    timestamps = []
 
-def get_key(expired=False):
-    conn = get_db_connection()
-    if expired:
-        result = conn.execute('SELECT key FROM keys WHERE exp < ?', (int(datetime.utcnow().timestamp()),)).fetchone()
-    else:
-        result = conn.execute('SELECT key FROM keys WHERE exp > ?', (int(datetime.utcnow().timestamp()),)).fetchone()
-    conn.close()
-    if result:
-        return decrypt_key(result['key'])
-    return None
-
-def get_valid_keys():
-    conn = get_db_connection()
-    keys = conn.execute('SELECT key FROM keys WHERE exp > ?', (int(datetime.utcnow().timestamp()),)).fetchall()
-    conn.close()
-    public_keys = []
-    for row in keys:
-        private_key = serialization.load_pem_private_key(row['key'], password=None, backend=default_backend())
-        public_key = private_key.public_key()
-        public_key_pem = public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
-        )
-        public_keys.append(public_key_pem)
-    return public_keys
-
-@app.route('/.well-known/jwks.json', methods=['GET'])
-def jwks():
-    valid_keys = get_valid_keys()
-    jwks_data = {'keys': []}
-    for public_key_pem in valid_keys:
-        jwks_data['keys'].append({
-            'kid': '1',
-            'kty': 'RSA',
-            'use': 'sig',
-            'alg': 'RS256',
-            'n': '',
-            'e': ''
-        })
-    return jsonify(jwks_data)
-
-@app.route('/auth', methods=['POST'])
-def auth():
-    expired = 'expired' in request.args
-    private_key = get_key(expired)
-    if private_key is None:
-        return jsonify({'error': 'No valid key found'}), 400
-    payload = {'username': 'userABC', 'exp': datetime.utcnow() + timedelta(minutes=30)}
-    token = jwt.encode(payload, private_key, algorithm='RS256', headers={'kid': '1'})
-    return jsonify({'token': token})
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        now = time()
+        timestamps.append(now)
+        timestamps[:] = [t for t in timestamps if now - t <= 1]
+        if len(timestamps) > 10:
+            return jsonify({'error': 'Too many requests'}), 429
+        return func(*args, **kwargs)
+    return wrapper
 
 @app.route('/register', methods=['POST'])
 def register():
-    data = request.json
-    username = data.get('username')
-    email = data.get('email')
-    password = str(uuid.uuid4())
-    password_hash = generate_password_hash(password, method='argon2')
-    conn = get_db_connection()
-    conn.execute('INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)', 
-                 (username, password_hash, email))
-    conn.commit()
-    conn.close()
-    return jsonify({'password': password})
+    try:
+        data = request.json
+        username = data.get('username')
+        email = data.get('email')
+
+        if not username or not email:
+            return jsonify({'error': 'Username and email are required'}), 400
+
+        password = str(uuid.uuid4())
+        hashed_password = sha256(password.encode()).hexdigest()
+
+        cur.execute("INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)",
+                    (username, hashed_password, email))
+        conn.commit()
+
+        return jsonify({'message': 'User registered successfully', 'password': password}), 201
+    except sqlite3.IntegrityError:
+        return jsonify({'error': 'Username or email already exists'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/store-key', methods=['POST'])
+def store_key():
+    try:
+        private_key = request.json.get('private_key')
+        if not private_key:
+            return jsonify({'error': 'Private key is required'}), 400
+
+        encrypted_key = encrypt_data(private_key)
+        cur.execute("INSERT INTO private_keys (key) VALUES (?)", (encrypted_key,))
+        conn.commit()
+
+        return jsonify({'message': 'Key stored successfully'}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/auth', methods=['POST'])
+@rate_limited
+def auth():
+    try:
+        user_id = 1
+        ip = request.remote_addr
+
+        cur.execute("INSERT INTO auth_logs (request_ip, user_id) VALUES (?, ?)", (ip, user_id))
+        conn.commit()
+
+        token = str(uuid.uuid4())
+        return jsonify({'token': token}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    create_tables()
-    generate_and_store_key(timedelta(hours=1))
     app.run(port=8080)
