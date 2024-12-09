@@ -19,6 +19,7 @@ To run this project:
 - Clone the repository
 - Set up a virtual environment
 - Install all dependencies (flask, pyjwt, requests and cryptography
+- Set up my key: set NOT_MY_KEY=my_super_secret_key
 - Run the server using python app.py
 
 To run the tests:
