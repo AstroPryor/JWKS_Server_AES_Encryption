@@ -400,25 +400,6 @@ Through this project, I gained hands-on experience with:
 
 This project helped me better understand why private keys should not be stored in plaintext and how encryption can be used to protect sensitive key material in an authentication system.
 
-## Future Improvements
-
-Future improvements could include:
-
-- Adding a `requirements.txt` file for easier dependency installation
-- Replacing the sample environment variable value with a stronger key setup process
-- Adding a `.env.example` file
-- Adding support for stronger secret management practices
-- Improving database initialization and cleanup
-- Adding user registration
-- Adding authentication request logging
-- Adding rate limiting to the authentication endpoint
-- Adding stronger input validation
-- Improving error handling and response formatting
-- Adding more detailed test cases
-- Adding API documentation
-- Adding Docker support for easier setup
-- Separating encryption, database, and route logic into different modules
-
 ## Related Versions
 
 This repository is the third version of the JWKS server project.
